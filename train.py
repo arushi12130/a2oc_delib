@@ -3,6 +3,7 @@ from collections import OrderedDict
 import numpy as np
 from OC_theano import AOCAgent_THEANO
 import cv2,copy,sys,pickle,os,time,argparse
+import csv
 from PIL import Image
 from utils.helper import foldercreation, str2bool, get_folder_name
 
@@ -118,7 +119,6 @@ class Training():
     self.rng = rng
     self.num_moves = num_moves
     self.id_num = id_num
-
     self.env = ALE_env(args, rng=rng)
     self.agent = AOCAgent_THEANO(self.env.action_space, id_num, arr, num_moves, args)
 
@@ -126,17 +126,19 @@ class Training():
 
   def train(self):
     total_reward = 0
-    x = self.env.reset()
+    x = self.env.reset()   #returns the current x
+    self.count += 1
     self.agent.reset(x)
     timer = time.time()
     recent_fps = []
-    frame_counter = 0
     total_games = 0
+    frame_counter =0
     done = False
+    totalreward_k_games = 0
+    reward_k_games = []
 
     while self.num_moves.value < self.args.max_num_frames:
       if done:
-        #ugly code, beautiful print
         total_games += 1
         secs = round(time.time()-timer, 1)
         frames = self.env.get_frame_count()
@@ -144,8 +146,30 @@ class Training():
         recent_fps = recent_fps[-9:]+[fps]
         eta = ((self.args.max_num_frames-self.num_moves.value)*self.args.frame_skip/(self.args.num_threads*np.mean(recent_fps)))
         print "id: %d\treward: %d\ttime: %.1f\tframes: %d\t %dfps  \tmoves: %d \t ETA: %dh %dm %ds  \t%.2f%%" % \
-        (self.id_num, total_reward, secs, frames, fps, self.num_moves.value, int(eta/3600), int(eta/60)%60, int(eta%60), 
+        (self.id_num, total_reward, secs, frames, fps, self.num_moves.value, int(eta/3600), int(eta/60)%60, int(eta%60),
           float(self.num_moves.value)/self.args.max_num_frames*100)
+        if self.args.testing:
+          if params.load_folder != "":
+            folder_name = params.load_folder
+          else:
+            print("No load folders for testing !!!")
+            exit(0)
+          if total_games <= self.args.kgames:
+            reward_k_games = np.append(reward_k_games,total_reward)
+            totalreward_k_games += total_reward
+          if total_games > self.args.kgames:
+            rewards_saving = np.asarray(reward_k_games)
+            np.save(folder_name+"/test_result.npy", rewards_saving) # saved rewards for k games
+            avgreward_k_games = totalreward_k_games/self.args.kgames
+            mean_reward = np.mean(reward_k_games)
+            std_reward = np.std(reward_k_games)
+            final_reward_stats =[mean_reward, std_reward]
+            np.savetxt(folder_name+"/test_result_stats.txt", np.asarray(final_reward_stats))
+            print "----------------------------------------------"
+            print "average reward for k games: ", avgreward_k_games
+            print "Numpy average reward for k games: ", (np.mean(reward_k_games))
+            print "std deviation for k games: ", (np.std(reward_k_games))
+            exit(0)
         timer = time.time()
         frame_counter = 0
 
@@ -188,14 +212,18 @@ def parse_params():
   parser.add_argument('--init-lr', type=float, default=0.0007)
   parser.add_argument('--rms-shared', type=str2bool, default=True)
   parser.add_argument('--critic-coef', type=float, default=1.)
-  parser.add_argument('--num-options', type=int, default=8)
+  parser.add_argument('--critic-sigma-coef', type=float, default=1.)
+  parser.add_argument('--num-options', type=int, default=4)
   parser.add_argument('--option-epsilon', type=float, default=0.1)
-  parser.add_argument('--delib-cost', type=float, default=0.0)
-  parser.add_argument('--margin-cost', type=float, default=0.0)
+  parser.add_argument('--delib-cost', type=float, default=0.02)
+  parser.add_argument('--margin-cost', type=float, default=0.8)
+  parser.add_argument('--psi', type=float, default=0.0) #here psi value is a constant for all state and options
   parser.add_argument('--save-path', type=str, default="models") 
   parser.add_argument('--load-folder', type=str, default="") # if not empty, will load folder to resume training
   parser.add_argument('--folder-name', type=str, default="")
   parser.add_argument('--resume-if-exists', type=str2bool, default=False) # for server that kills and restarts processes
+  parser.add_argument('--seed', type=int, default=100) # seed
+  parser.add_argument('--kgames', type=int, default=200) # testing games
   return parser.parse_known_args()[0] #parser.parse_args()
 
 
@@ -239,7 +267,7 @@ if __name__ == '__main__':
     
   num_moves = Value("i", init_num_moves, lock=False)
   arr = [Array('f', m.flatten(), lock=False) for m in init_weights]
-  seed = np.random.randint(10000)
+  seed = params.seed
   for i in range(params.num_threads):
     Process(target=f, args=(np.random.RandomState(seed+i), i+1, arr, num_moves, params)).start()
 

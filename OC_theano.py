@@ -44,36 +44,49 @@ class AOCAgent_THEANO():
     self.conv = Model(model_network, input_size=[None,args.concat_frames*(1 if args.grayscale else 3),84,84])
     self.termination_model = Model([{"model_type": "mlp", "out_size": args.num_options, "activation": "sigmoid", "W":0}], input_size=out)
     self.Q_val_model = Model([{"model_type": "mlp", "out_size": args.num_options, "activation": "linear", "W":0}], input_size=out)
+    self.Sigma_val_model = Model([{"model_type": "mlp", "out_size": args.num_options, "activation": "linear", "W":0}], input_size=out) #Sigma: Variance(state,option)
     self.options_model = MLP3D(input_size=out[1], num_options=args.num_options, out_size=num_actions, activation="softmax")
-    self.params = self.conv.params + self.Q_val_model.params + self.options_model.params + self.termination_model.params
+    self.params = self.conv.params + self.Q_val_model.params + self.options_model.params + self.termination_model.params + self.Sigma_val_model.params
     self.set_rms_shared_weights(shared_arr)
 
-    x = T.ftensor4()
-    y = T.fvector()
-    a = T.ivector()
-    o = T.ivector()
+    x = T.ftensor4() #observation
+    y = T.fvector() #G
+    y_sigma = T.fvector() #True variance (s,o) like G is true value for Q(s,o)
+    a = T.ivector() #action
+    o = T.ivector() #option
     delib = T.fscalar()
 
-    s = self.conv.apply(x/np.float32(255))
+    s = self.conv.apply(x/np.float32(255)) #states
     intra_option_policy = self.options_model.apply(s, o)
 
     q_vals = self.Q_val_model.apply(s)
+    sigma_vals = self.Sigma_val_model.apply(s)
     disc_q = theano.gradient.disconnected_grad(q_vals)
+    disc_sigma = theano.gradient.disconnected_grad(sigma_vals)
     current_option_q = q_vals[T.arange(o.shape[0]), o]
+    current_option_sigma = sigma_vals[T.arange(o.shape[0]), o]
     disc_opt_q = disc_q[T.arange(o.shape[0]), o]
+    disc_opt_sigma = disc_sigma[T.arange(o.shape[0]), o]
     terms = self.termination_model.apply(s)
-    o_term = terms[T.arange(o.shape[0]), o]
+    o_term = terms[T.arange(o.shape[0]), o] #termination at option (s,o)
     V = T.max(q_vals, axis=1)*(1-self.args.option_epsilon) + (self.args.option_epsilon*T.mean(q_vals, axis=1))
+    V_sigma = T.min(sigma_vals, axis=1)*(1-self.args.option_epsilon) \
+              + (self.args.option_epsilon*T.mean(sigma_vals, axis=1)) #Ideal V_var is min[sigma(s,o)] we want to achieve that
     disc_V = theano.gradient.disconnected_grad(V)
+    disc_V_sigma = theano.gradient.disconnected_grad(V_sigma)
 
     aggr = T.mean #T.sum
     log_eps = 0.0001
 
-    critic_cost = aggr(args.critic_coef*0.5*T.sqr(y-current_option_q))
-    termination_grad = aggr(o_term*((disc_opt_q-disc_V)+delib))
+    critic_cost = aggr(args.critic_coef*0.5*T.sqr(y-current_option_q)) # update for Q(s,o)
+    critic_sigma_cost = aggr(args.critic_sigma_coef*0.5*T.sqr(y_sigma - current_option_sigma)) # update for sigma(s,o)
+    # termination_grad = aggr(o_term*((disc_opt_q-disc_V)+delib))
+    advantage_q = disc_opt_q-disc_V #advatnage function for Q value
+    advantage_sigma = disc_opt_sigma-disc_V_sigma #advantage function for sigma
+    termination_grad = aggr(o_term*((advantage_q - self.args.psi*advantage_sigma)+delib)) #CHANGE
     entropy = -aggr(T.sum(intra_option_policy*T.log(intra_option_policy+log_eps), axis=1))*args.entropy_reg
-    pg = aggr((T.log(intra_option_policy[T.arange(a.shape[0]), a]+log_eps)) * (y-disc_opt_q))
-    cost = pg + entropy - critic_cost - termination_grad
+    pg = aggr((T.log(intra_option_policy[T.arange(a.shape[0]), a]+log_eps)) * ((y-disc_opt_q) - self.args.psi*(y_sigma - disc_opt_sigma)))
+    cost = pg + entropy - critic_cost -critic_sigma_cost - termination_grad
     
     grads = T.grad(cost*args.update_freq, self.params)
     #grads = T.grad(cost, self.params)
@@ -84,22 +97,26 @@ class AOCAgent_THEANO():
     self.get_policy = theano.function([s, o], intra_option_policy)
     self.get_termination = theano.function([x], terms)
     self.get_q = theano.function([x], q_vals)
+    self.get_sigma = theano.function([x], sigma_vals)
     self.get_q_from_s = theano.function([s], q_vals)
+    self.get_sigma_from_s = theano.function([s], sigma_vals)
     self.get_V = theano.function([x], V)
+    self.get_V_sigma = theano.function([x], V_sigma)
 
-    self.rms_grads = theano.function([x,a,y,o, delib], grad_rms, updates=updates, on_unused_input='warn')
+
+    self.rms_grads = theano.function([x,a,y,y_sigma,o, delib], grad_rms, updates=updates, on_unused_input='warn')
     print "ALL COMPILED"
 
     if not self.args.testing:
       self.init_tracker()
     self.initialized = False
 
-  def update_weights(self, x, a, y, o, moves, delib):
+  def update_weights(self, x, a, y, y_sigma, o, moves, delib): #here y is Value function and y_sigma is Variance function
     args = self.args
     self.num_moves.value += moves
     lr = np.max([args.init_lr * (args.max_num_frames-self.num_moves.value)/args.max_num_frames, 0]).astype("float32")
 
-    cumul = self.rms_grads(x,a,y,o,delib)
+    cumul = self.rms_grads(x,a,y,y_sigma,o,delib)
     for i in range(len(cumul)):
       self.shared_arr[i] += lr*cumul[i]
       self.params[i].set_value(self.shared_arr[i])
@@ -140,8 +157,9 @@ class AOCAgent_THEANO():
     p = self.get_policy([self.current_s], [self.current_o])
     return self.rng.choice(range(self.num_actions), p=p[-1])
 
-  def get_policy_over_options(self, s):
-    return self.get_q_from_s(s)[0].argmax() if self.rng.rand() > self.args.option_epsilon else self.rng.randint(self.args.num_options)
+  def get_policy_over_options(self, s): # change in policy over options
+    return ((self.get_q_from_s(s)[0] - self.args.psi*self.get_sigma_from_s(s)[0]).argmax() if self.rng.rand() > self.args.option_epsilon else self.rng.randint(self.args.num_options)) #CHANGE
+    # return self.get_q_from_s(s)[0].argmax() if self.rng.rand() > self.args.option_epsilon else self.rng.randint(self.args.num_options)
 
   def update_internal_state(self, x):
     self.current_s = self.get_state([x])[0]
@@ -154,7 +172,7 @@ class AOCAgent_THEANO():
     self.o_tracker_steps[self.current_o] += 1
 
   def init_tracker(self):
-    csv_things = ["moves", "reward", "term_prob"]
+    csv_things = ["moves", "reward", "term_prob", "tderror_mod"]
     csv_things += ["opt_chosen"+str(ccc) for ccc in range(self.args.num_options)]
     csv_things += ["opt_steps"+str(ccc) for ccc in range(self.args.num_options)]
     with open(self.args.folder_name+"/data.csv", "a") as myfile:
@@ -162,7 +180,7 @@ class AOCAgent_THEANO():
 
   def tracker(self):
     term_prob = float(self.termination_counter)/self.frame_counter*100
-    csv_things = [self.num_moves.value, self.total_reward, round(term_prob,1)]+list(self.o_tracker_chosen)+list(self.o_tracker_steps)
+    csv_things = [self.num_moves.value, self.total_reward, round(term_prob,1), round(self.total_td_error_mod,1)]+list(self.o_tracker_chosen)+list(self.o_tracker_steps)
     with open(self.args.folder_name+"/data.csv", "a") as myfile:
       myfile.write(",".join([str(cc) for cc in csv_things])+"\n")
 
@@ -175,6 +193,7 @@ class AOCAgent_THEANO():
   def reset(self, x):
     if not self.args.testing and self.initialized: self.tracker()
     self.total_reward = 0
+    self.total_td_error_mod = 0.0
     self.terminated = True
     self.reset_tracker()
     self.update_internal_state(x)
@@ -184,6 +203,7 @@ class AOCAgent_THEANO():
     self.a_seq = np.zeros((self.args.max_update_freq,), dtype="int32")
     self.o_seq = np.zeros((self.args.max_update_freq,), dtype="int32")
     self.r_seq = np.zeros((self.args.max_update_freq,), dtype="float32")
+    self.td_square_seq = np.zeros((self.args.max_update_freq,), dtype="float32")
     self.x_seq = np.zeros((self.args.max_update_freq, self.args.concat_frames*(1 if self.args.grayscale else 3),84,84),dtype="float32")
     self.t_counter = 0
 
@@ -201,7 +221,10 @@ class AOCAgent_THEANO():
     self.o_seq[self.t_counter] = np.copy(self.current_o)
     self.a_seq[self.t_counter] = np.copy(action)
     self.r_seq[self.t_counter] = np.copy(float(reward)) - (float(self.terminated)*self.delib*(1-float(end_ep)))
-
+    V = self.get_V([new_x])[0] if self.terminated else self.get_q([new_x])[0][self.current_o]
+    current_td_error = np.copy(float(reward) + self.args.gamma*V - self.get_q([x])[0][self.current_o])
+    self.td_square_seq[self.t_counter] = np.round(np.square(current_td_error),4)
+    self.total_td_error_mod += np.round(np.fabs(current_td_error),4)
     self.t_counter += 1
 
     # do n-step return to option termination. 
@@ -212,12 +235,18 @@ class AOCAgent_THEANO():
     if self.t_counter == self.args.max_update_freq or end_ep or option_term:
       if not self.args.testing:
         V = self.get_V([new_x])[0] if self.terminated else self.get_q([new_x])[0][self.current_o]
+        V_sigma = self.get_V_sigma([new_x])[0] if self.terminated else self.get_sigma([new_x])[0][self.current_o]
         R = 0 if end_ep else V
+        R_sigma = 0 if end_ep else V_sigma
         V = []
+        V_sigma=[] #TD error Square i.e. pseudo reward term for variance calculation
         for j in range(self.t_counter-1,-1,-1):
-          R = np.float32(self.r_seq[j] + self.args.gamma*R)
+          R = np.float32(self.r_seq[j] + self.args.gamma*R) #true value
+          R_sigma = np.float32(self.td_square_seq[j] + self.args.gamma*R_sigma) # true variance
           V.append(R)
-        self.update_weights(self.x_seq[:self.t_counter], self.a_seq[:self.t_counter], V[::-1], 
+          V_sigma.append(R_sigma)
+
+        self.update_weights(self.x_seq[:self.t_counter], self.a_seq[:self.t_counter], V[::-1], V_sigma[::-1],
                             self.o_seq[:self.t_counter], self.t_counter, self.delib+self.args.margin_cost)
       self.reset_storing()
     if not end_ep:
