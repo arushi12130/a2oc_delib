@@ -2,8 +2,7 @@ from multiprocessing import Process, Value, Array, RawArray
 from collections import OrderedDict
 import numpy as np
 from OC_theano import AOCAgent_THEANO
-import cv2,copy,sys,pickle,os,time,argparse
-import csv
+import copy,sys,pickle,os,time,argparse
 from PIL import Image
 from utils.helper import foldercreation, str2bool, get_folder_name
 
