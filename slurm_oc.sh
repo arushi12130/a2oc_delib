@@ -27,7 +27,7 @@ do
             echo "#SBATCH --time=15:00:00" >> temprun.sh
             echo "#SBATCH --mem-per-cpu=2000">> temprun.sh
             echo "source ~/.bashrc" >> temprun.sh
-            a="python train.py --sub-env "$gamename" --seed "$seed" --folder-name "$folder_name" --option-epsilon "$epsilon" --psi "$psi
+            a="THEANO_FLAGS=floatX=float32 python2.7 train.py --sub-env "$gamename" --seed "$seed" --folder-name "$folder_name" --option-epsilon "$epsilon" --psi "$psi
             echo "$folder_name" >> fileNamesrun2.txt
             echo $a >> temprun.sh
             echo $a

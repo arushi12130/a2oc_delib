@@ -126,7 +126,6 @@ class Training():
   def train(self):
     total_reward = 0
     x = self.env.reset()   #returns the current x
-    self.count += 1
     self.agent.reset(x)
     timer = time.time()
     recent_fps = []
