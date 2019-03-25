@@ -148,7 +148,7 @@ class Training():
           float(self.num_moves.value)/self.args.max_num_frames*100)
         if self.args.testing:
           if params.load_folder != "":
-            folder_name = params.load_folder
+            new_folder_name = params.load_folder
           else:
             print("No load folders for testing !!!")
             exit(0)
@@ -157,12 +157,12 @@ class Training():
             totalreward_k_games += total_reward
           if total_games > self.args.kgames:
             rewards_saving = np.asarray(reward_k_games)
-            np.save(folder_name+"/test_result.npy", rewards_saving) # saved rewards for k games
+            np.save(new_folder_name+"/test_result.npy", rewards_saving) # saved rewards for k games
             avgreward_k_games = totalreward_k_games/self.args.kgames
             mean_reward = np.mean(reward_k_games)
             std_reward = np.std(reward_k_games)
             final_reward_stats =[mean_reward, std_reward]
-            np.savetxt(folder_name+"/test_result_stats.txt", np.asarray(final_reward_stats))
+            np.savetxt(new_folder_name+"/test_result_stats.txt", np.asarray(final_reward_stats))
             print "----------------------------------------------"
             print "average reward for k games: ", avgreward_k_games
             print "Numpy average reward for k games: ", (np.mean(reward_k_games))
