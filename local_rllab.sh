@@ -16,4 +16,4 @@ for epsilon in "${epsilons[@]}"; do
 			echo "$folder_name" >> fileNamesrun2.txt
 		done		
 	done
-don
+done
