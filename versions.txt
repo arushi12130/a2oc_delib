@@ -1,0 +1,14 @@
+git clone https://github.com/Lasagne/Lasagne.git
+cd Lasagne
+pip install -r requirements.txt
+python setup.py develop
+
+Theano 0.8.2 compatible with it
+
+numpy 1.12.0
+
+This wotks with existing code
+
+conda install -c rdonnelly libstdcxx_linux-cos5-x86_64=6.3.0
+
+pip install gym[atari]
